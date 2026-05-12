@@ -1,9 +1,6 @@
 [build]
   publish = "."
 
-[[plugins]]
-  package = "@netlify/plugin-nextjs"
-
 [functions]
   node_bundler = "esbuild"
 
