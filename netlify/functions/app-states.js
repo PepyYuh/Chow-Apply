@@ -1,83 +1,61 @@
-// netlify/functions/app-states.js
-// Reads and writes application open/closed states using Netlify Blobs
-// so every visitor sees the same state.
+exports.handler = async function(event) {
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Content-Type": "application/json"
+  };
 
-import { getStore } from "@netlify/blobs";
+  if (event.httpMethod === "OPTIONS") {
+    return { statusCode: 204, headers, body: "" };
+  }
 
-const BLOB_KEY = "chow_app_states";
+  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "374239874623074623";
+  const ROLES = ["Mod", "Beta", "Dev", "Content Creator"];
 
-// Default: all open
-const DEFAULT_STATES = { Mod: true, Beta: true, Dev: true, "Content Creator": true };
+  // Use Netlify's built-in key-value store (no package needed)
+  const { NetlifyKV } = process.env.NETLIFY ? require("@netlify/functions") : {};
+  
+  // Simpler approach: use process.env to store state as a JSON env var
+  // Actually use a free JSONBin as the backend instead
+  const BIN_ID = process.env.JSONBIN_ID;
+  const BIN_KEY = process.env.JSONBIN_KEY;
 
-export default async function handler(req) {
-  const store = getStore("chow-admin");
+  const DEFAULT = { Mod: true, Beta: true, Dev: true, "Content Creator": true };
 
-  // ── GET: return current states ──
-  if (req.method === "GET") {
+  if (!BIN_ID || !BIN_KEY) {
+    // No bin configured yet, return defaults
+    return { statusCode: 200, headers, body: JSON.stringify(DEFAULT) };
+  }
+
+  if (event.httpMethod === "GET") {
     try {
-      const raw = await store.get(BLOB_KEY, { type: "json" });
-      return new Response(JSON.stringify(raw ?? DEFAULT_STATES), {
-        status: 200,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-          "Cache-Control": "no-store",
-        },
+      const res = await fetch(`https://api.jsonbin.io/v3/b/${BIN_ID}/latest`, {
+        headers: { "X-Master-Key": BIN_KEY }
       });
+      const data = await res.json();
+      return { statusCode: 200, headers, body: JSON.stringify(data.record) };
     } catch {
-      return new Response(JSON.stringify(DEFAULT_STATES), {
-        status: 200,
-        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      });
+      return { statusCode: 200, headers, body: JSON.stringify(DEFAULT) };
     }
   }
 
-  // ── POST: update states (requires password) ──
-  if (req.method === "POST") {
+  if (event.httpMethod === "POST") {
     let body;
-    try {
-      body = await req.json();
-    } catch {
-      return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
-    }
+    try { body = JSON.parse(event.body); } catch { return { statusCode: 400, headers, body: '{"error":"Bad JSON"}' }; }
+    if (body.password !== ADMIN_PASSWORD) return { statusCode: 401, headers, body: '{"error":"Unauthorized"}' };
 
-    // Password check  (keep this secret — set ADMIN_PASSWORD in Netlify env vars)
-    const envPass = process.env.ADMIN_PASSWORD || "374239874623074623";
-    if (body.password !== envPass) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { "Access-Control-Allow-Origin": "*" },
-      });
-    }
-
-    // Validate payload
-    const validRoles = ["Mod", "Beta", "Dev", "Content Creator"];
     const newStates = {};
-    for (const role of validRoles) {
-      newStates[role] = body.states?.[role] !== false; // default true
-    }
+    ROLES.forEach(r => { newStates[r] = body.states?.[r] !== false; });
 
-    await store.setJSON(BLOB_KEY, newStates);
-
-    return new Response(JSON.stringify({ ok: true, states: newStates }), {
-      status: 200,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+    await fetch(`https://api.jsonbin.io/v3/b/${BIN_ID}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Master-Key": BIN_KEY },
+      body: JSON.stringify(newStates)
     });
+
+    return { statusCode: 200, headers, body: JSON.stringify({ ok: true, states: newStates }) };
   }
 
-  // OPTIONS (CORS preflight)
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-      },
-    });
-  }
-
-  return new Response("Method not allowed", { status: 405 });
-}
-
-export const config = { path: "/api/app-states" };
+  return { statusCode: 405, headers, body: "Method not allowed" };
+};
